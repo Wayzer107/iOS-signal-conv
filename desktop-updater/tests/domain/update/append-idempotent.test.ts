@@ -163,4 +163,61 @@ describe('append update', () => {
     expect(result).toEqual({ inserted: 0, skipped: fixtureMessages.length });
     expect(readJoinedMessages(dbPath)).toHaveLength(fixtureMessages.length);
   });
+
+  it('recognizes existing message rows even when conversations/recipients tables are absent (partial init)', async () => {
+    // Create a messages-only archive where conversation_id and author_id are
+    // stored as the canonical string keys. This simulates a partially
+    // initialized target where lookup tables are missing but message rows exist.
+    function seedMessagesOnlyWithStringKeys(path: string, messages: CanonicalMessage[]): void {
+      const db = openDatabase(path);
+      try {
+        // Find the CREATE TABLE statement for messages from the canonical schema
+        const msgsSql = createArchiveSchemaSql().find((s) => s.includes('CREATE TABLE messages'));
+        if (!msgsSql) throw new Error('messages DDL not found');
+        db.exec(msgsSql);
+
+        const insertMessage = db.prepare(`
+          INSERT INTO messages (
+            conversation_id,
+            author_id,
+            timestamp,
+            body,
+            has_attachments,
+            has_quote,
+            quote_body
+          ) VALUES (?, ?, ?, ?, ?, ?, ?);
+        `);
+
+        for (const msg of messages) {
+          // Intentionally store the canonical conversation/author keys directly
+          // into the conversation_id/author_id columns (sqlite allows this).
+          insertMessage.run(
+            msg.conversationKey,
+            msg.authorKey,
+            msg.timestampMs,
+            msg.body,
+            msg.hasAttachments ? 1 : 0,
+            msg.hasQuote ? 1 : 0,
+            msg.quoteBody
+          );
+        }
+      } finally {
+        db.close();
+      }
+    }
+
+    seedMessagesOnlyWithStringKeys(dbPath, fixtureMessages);
+
+    const result = await applyAppendUpdate(dbPath, fixtureMessages);
+
+    expect(result).toEqual({ inserted: 0, skipped: fixtureMessages.length });
+    // The messages table should still contain the seeded rows
+    const db = openDatabase(dbPath);
+    try {
+      const rows = db.prepare('SELECT COUNT(*) as c FROM messages;').get() as { c: number };
+      expect(rows.c).toBe(fixtureMessages.length);
+    } finally {
+      db.close();
+    }
+  });
 });

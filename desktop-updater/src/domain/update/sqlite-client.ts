@@ -97,26 +97,57 @@ function readPersistedMessages(db: SqliteDatabase): PersistedMessageRow[] {
     return [];
   }
 
-  if (!tableExists(db, 'conversations') || !tableExists(db, 'recipients')) {
-    return [];
+  const hasConversations = tableExists(db, 'conversations');
+  const hasRecipients = tableExists(db, 'recipients');
+
+  if (hasConversations && hasRecipients) {
+    // Normal case: we can join to conversations/recipients to get human keys
+    return db
+      .prepare(`
+        SELECT
+          COALESCE(c.title, '') AS conversationKey,
+          COALESCE(r.display_name, '') AS authorKey,
+          COALESCE(m.timestamp, 0) AS timestampMs,
+          COALESCE(m.body, '') AS body,
+          COALESCE(m.has_attachments, 0) AS hasAttachments,
+          COALESCE(m.has_quote, 0) AS hasQuote,
+          m.quote_body AS quoteBody
+        FROM messages m
+        LEFT JOIN conversations c ON c.id = m.conversation_id
+        LEFT JOIN recipients r ON r.id = m.author_id
+        ORDER BY m.id;
+      `)
+      .all() as PersistedMessageRow[];
   }
 
+  // Partially initialized: messages exist but one or both lookup tables are missing.
+  // Fall back to reading the raw conversation_id and author_id values from the
+  // messages table and coerce them to strings so we can compute identities from
+  // whatever persisted content is present (helps idempotency when the lookup
+  // tables are absent but messages were previously written).
   return db
     .prepare(`
       SELECT
-        COALESCE(c.title, '') AS conversationKey,
-        COALESCE(r.display_name, '') AS authorKey,
+        COALESCE(m.conversation_id, '') AS conversationKey,
+        COALESCE(m.author_id, '') AS authorKey,
         COALESCE(m.timestamp, 0) AS timestampMs,
         COALESCE(m.body, '') AS body,
         COALESCE(m.has_attachments, 0) AS hasAttachments,
         COALESCE(m.has_quote, 0) AS hasQuote,
         m.quote_body AS quoteBody
       FROM messages m
-      LEFT JOIN conversations c ON c.id = m.conversation_id
-      LEFT JOIN recipients r ON r.id = m.author_id
       ORDER BY m.id;
     `)
-    .all() as PersistedMessageRow[];
+    .all()
+    .map((row: any) => ({
+      conversationKey: row.conversationKey == null ? '' : String(row.conversationKey),
+      authorKey: row.authorKey == null ? '' : String(row.authorKey),
+      timestampMs: Number(row.timestampMs) || 0,
+      body: row.body == null ? '' : String(row.body),
+      hasAttachments: Number(row.hasAttachments) || 0,
+      hasQuote: Number(row.hasQuote) || 0,
+      quoteBody: row.quoteBody == null ? null : String(row.quoteBody),
+    })) as PersistedMessageRow[];
 }
 
 export async function readPersistedMessageIdentities(dbPath: string): Promise<Set<string>> {

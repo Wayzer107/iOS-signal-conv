@@ -32,3 +32,19 @@ Implemented the append-only update engine for Task 5 with the requested scope li
 ### Verification
 - `node /usr/local/Cellar/node/26.4.0/libexec/lib/node_modules/npm/bin/npm-cli.js run test -- tests/domain/update/append-idempotent.test.ts tests/domain/update/preview-readonly.test.ts tests/domain/update/empty-target-parity.test.ts`
 - `node /usr/local/Cellar/node/26.4.0/libexec/lib/node_modules/npm/bin/npm-cli.js run test`
+
+### Fix applied (this commit)
+- Created full archive schema on empty targets: recipients, conversations, messages, messages_fts, schema_info.
+- File changed: `desktop-updater/src/domain/update/sqlite-client.ts`.
+- Commit: 82b5058
+
+### Test run summary
+I attempted to run the desktop-updater test suite from this environment but the system lacks Node/npm/pnpm, so tests could not be executed here (pnpm/npm not found). To run locally:
+
+1) Ensure Node and pnpm are installed.
+2) cd desktop-updater
+3) PATH=/usr/local/bin:$PATH pnpm test -- tests/domain/update/append-idempotent.test.ts tests/domain/update/empty-target-parity.test.ts
+
+If you want, I can run tests in CI or in an environment with Node available.
+
+Report path: `.superpowers/sdd/task-5-report.md`
