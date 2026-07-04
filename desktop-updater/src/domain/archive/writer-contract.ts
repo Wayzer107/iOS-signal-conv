@@ -5,14 +5,8 @@ export function createArchiveSchemaSql(): string[] {
   return schemaSql();
 }
 
-function encodeField(value: string): string {
-  const v = value ?? '';
-  const len = Buffer.from(v, 'utf8').length;
-  return `${len}:${v}`;
-}
-
 export function computeMessageIdentity(message: CanonicalMessage): string {
-  // Length-prefixed UTF-8 fields to avoid collisions from raw delimiters
+  // Plain pipe-joined fields as specified by the brief, with a trailing pipe
   const fields = [
     message.conversationKey,
     message.authorKey,
@@ -22,7 +16,7 @@ export function computeMessageIdentity(message: CanonicalMessage): string {
     message.hasQuote ? '1' : '0',
     message.quoteBody ?? '',
   ];
-  return fields.map((f) => encodeField(f)).join('|');
+  return fields.join('|');
 }
 
 function asciiCompare(a: string, b: string): number {
@@ -37,9 +31,7 @@ export function sortCanonicalMessages(messages: CanonicalMessage[]): CanonicalMe
     if (a.timestampMs !== b.timestampMs) return a.timestampMs - b.timestampMs;
     const d = asciiCompare(a.authorKey ?? '', b.authorKey ?? '');
     if (d !== 0) return d;
-    if ((a.body ?? '') !== (b.body ?? '')) return asciiCompare(a.body ?? '', b.body ?? '');
-    if (a.hasAttachments !== b.hasAttachments) return (a.hasAttachments ? 1 : 0) - (b.hasAttachments ? 1 : 0);
-    if (a.hasQuote !== b.hasQuote) return (a.hasQuote ? 1 : 0) - (b.hasQuote ? 1 : 0);
-    return asciiCompare(a.quoteBody ?? '', b.quoteBody ?? '');
+    // Do NOT apply extra tie-breakers beyond conversationKey, timestampMs, authorKey per brief
+    return 0;
   });
 }

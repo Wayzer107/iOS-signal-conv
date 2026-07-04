@@ -14,6 +14,6 @@ describe('archive contract', () => {
       hasQuote: false,
       quoteBody: null,
     });
-    expect(id).toBe('2:c1|2:a1|1:1|5:hello|1:0|1:0|0:');
+    expect(id).toBe('c1|a1|1|hello|0|0|');
   });
 });
