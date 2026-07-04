@@ -52,14 +52,25 @@ function tableExists(db: SqliteDatabase, tableName: string): boolean {
   return rows.length > 0;
 }
 
+import { createArchiveSchemaSql } from '../archive/schema';
+
 function ensureArchiveSchema(db: SqliteDatabase): void {
-  db.exec(
-    'CREATE TABLE IF NOT EXISTS recipients (id INTEGER PRIMARY KEY, display_name TEXT);'
-  );
-  db.exec('CREATE TABLE IF NOT EXISTS conversations (id INTEGER PRIMARY KEY, title TEXT);');
-  db.exec(
-    'CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY, conversation_id INTEGER, author_id INTEGER, timestamp INTEGER, body TEXT, has_attachments INTEGER, has_quote INTEGER, quote_body TEXT);'
-  );
+  // Create all tables defined by the Task 2 archive contract. Use the centralized
+  // schema helper so tests and other code share the same DDL.
+  for (const sql of createArchiveSchemaSql()) {
+    const trimmed = sql.trim().replace(/;$/, '');
+    if (/^CREATE\s+VIRTUAL\s+TABLE/i.test(trimmed)) {
+      // Ensure virtual tables include IF NOT EXISTS
+      const rest = trimmed.replace(/^CREATE\s+VIRTUAL\s+TABLE\s+/i, '');
+      db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS ${rest};`);
+    } else if (/^CREATE\s+TABLE/i.test(trimmed)) {
+      const rest = trimmed.replace(/^CREATE\s+TABLE\s+/i, '');
+      db.exec(`CREATE TABLE IF NOT EXISTS ${rest};`);
+    } else {
+      // Fallback to executing the provided statement as-is
+      db.exec(trimmed + ';');
+    }
+  }
 }
 
 function getOrCreateId(
