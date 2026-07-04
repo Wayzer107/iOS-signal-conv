@@ -2,11 +2,11 @@
 
 ## Goal
 
-Build a new cross-platform desktop app (Linux, macOS, Windows) that updates an iOS-compatible Signal archive SQLite database by appending new data from Signal Desktop local data. The app must preserve existing rows and only append new rows. For empty targets, output must match the semantics of `/Users/jamie/Documents/signalparser/preprocess/signal_to_sqlite.py`.
+Build a new cross-platform desktop app (Linux, macOS, Windows) that updates an iOS-compatible Signal archive SQLite database by appending new data from Signal Desktop local data. The app must preserve existing rows and only append new rows. For empty targets, output must match the semantics of `/Users/jamie/Documents/signalparser/preprocess/signal_to_sqlite.py`. Existing code from `Wayzer107/signal-archive-updater` may be reused directly where it accelerates delivery while preserving deterministic output.
 
 ## Scope
 
-1. New standalone desktop app (from scratch), with prior projects used as reference only.
+1. New standalone desktop app, with selective code reuse from `signal-archive-updater` allowed for transformation/parity-critical logic.
 2. Primary input source: Signal Desktop local database/profile data.
 3. Output/update target: iOS archive SQLite schema used by existing iOS viewer stack.
 4. Incremental behavior: append-only updates, idempotent on repeated runs.
@@ -26,6 +26,7 @@ The system is split into four isolated modules:
    - Converts source records into a stable intermediate message model.
    - Applies deterministic normalization for fields that influence output rows.
    - Maintains consistent conversation and participant mapping.
+   - Reuses proven normalization/mapping code from `signal-archive-updater` where compatible, then extends it for Signal Desktop input specifics.
 
 3. **SQLite updater/writer**
    - Opens existing target archive or initializes a new one with the required schema.
