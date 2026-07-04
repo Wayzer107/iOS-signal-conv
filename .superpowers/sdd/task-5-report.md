@@ -75,3 +75,21 @@ Report path: `.superpowers/sdd/task-5-report.md`
   - Result: `9 passed, 12 tests passed`
 - `cd desktop-updater && PATH=/usr/local/bin:$PATH pnpm test`
   - Result: `9 passed, 12 tests passed`
+2026-07-04T03:03:43Z - Ran npm test in desktop-updater.\n\n
+ RUN  v1.6.1 /Users/jamie/Sources/copilot-worktrees/iOS-signal-conv/wayzer107-reimagined-potato/desktop-updater
+
+ ✓ tests/domain/normalize/normalization.test.ts  (2 tests) 9ms
+ ✓ tests/domain/update/empty-target-parity.test.ts  (1 test) 15ms
+ ✓ tests/domain/update/append-idempotent.test.ts  (3 tests) 179ms
+ ✓ tests/domain/archive/schema-contract.test.ts  (1 test) 3ms
+ ✓ tests/domain/archive/sort-canonical.test.ts  (1 test) 3ms
+ ✓ tests/domain/update/preview-readonly.test.ts  (1 test) 14ms
+ ✓ tests/domain/update/preview-populated.test.ts  (1 test) 21ms
+ ✓ tests/domain/source/read-desktop.test.ts  (1 test) 3ms
+ ✓ tests/domain/source/discovery.test.ts  (1 test) 3ms
+ ✓ tests/smoke/app-smoke.test.ts  (1 test) 3ms
+
+ Test Files  10 passed (10)
+      Tests  13 passed (13)
+   Start at  05:03:46
+   Duration  2.32s (transform 192ms, setup 1ms, collect 547ms, tests 253ms, environment 2ms, prepare 3.96s)

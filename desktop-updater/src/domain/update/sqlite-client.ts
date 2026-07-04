@@ -30,7 +30,7 @@ function stableNumericId(value: string): bigint {
   return normalized === 0n ? 1n : normalized;
 }
 
-function computeAppendIdentity(message: Pick<
+export function computeAppendIdentity(message: Pick<
   CanonicalMessage,
   'conversationKey' | 'authorKey' | 'timestampMs' | 'body' | 'hasAttachments' | 'hasQuote' | 'quoteBody'
 >): string {

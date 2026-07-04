@@ -1,6 +1,6 @@
 import type { CanonicalMessage } from '../archive/types';
-import { computeMessageIdentity, sortCanonicalMessages } from '../archive/writer-contract';
-import { appendCanonicalMessages, readPersistedMessageIdentities } from './sqlite-client';
+import { sortCanonicalMessages } from '../archive/writer-contract';
+import { appendCanonicalMessages, readPersistedMessageIdentities, computeAppendIdentity } from './sqlite-client';
 
 type AppendResult = { inserted: number; skipped: number };
 
@@ -9,7 +9,7 @@ function uniqueBatchMessages(messages: CanonicalMessage[]): CanonicalMessage[] {
   const unique: CanonicalMessage[] = [];
 
   for (const message of sortCanonicalMessages(messages)) {
-    const identity = computeMessageIdentity(message);
+    const identity = computeAppendIdentity(message);
     if (seen.has(identity)) {
       continue;
     }
@@ -26,7 +26,7 @@ export async function previewAppend(
 ): Promise<{ totalInput: number; newRows: number; skippedExisting: number }> {
   const existing = await readPersistedMessageIdentities(targetDbPath);
   const uniqueMessages = uniqueBatchMessages(messages);
-  const newRows = uniqueMessages.filter((message) => !existing.has(computeMessageIdentity(message))).length;
+  const newRows = uniqueMessages.filter((message) => !existing.has(computeAppendIdentity(message))).length;
   return {
     totalInput: messages.length,
     newRows,
