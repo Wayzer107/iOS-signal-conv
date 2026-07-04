@@ -1,0 +1,9 @@
+[package]
+name = "desktop_updater_tauri"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Minimal dependencies required for Tauri command responses used in tests
+serde = { version = "1.0", features = ["derive"] }
+tauri = { version = "1.2", optional = true }
