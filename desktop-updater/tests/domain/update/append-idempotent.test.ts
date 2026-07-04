@@ -1,19 +1,20 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { mkdir, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { applyAppendUpdate } from '../../../src/domain/update/apply-update';
-import { fixtureMessages } from '../fixtures/messages';
-import { createArchiveSchemaSql } from '../../../src/domain/archive/schema';
 import type { CanonicalMessage } from '../../../src/domain/archive/types';
+import { fixtureMessages } from '../fixtures/messages';
 
 const dbPath = resolve(process.cwd(), 'tmp', 'idempotent.sqlite');
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
 
-type JoinedMessageRow = {
-  conversationKey: string;
-  authorKey: string;
+type MessageRow = {
+  id: number;
+  conversationId: string;
+  authorId: string;
   timestamp: number;
   body: string;
   hasAttachments: number;
@@ -21,27 +22,65 @@ type JoinedMessageRow = {
   quoteBody: string | null;
 };
 
+type FtsRow = {
+  rowid: number;
+  body: string;
+};
+
 function openDatabase(path: string): InstanceType<typeof DatabaseSync> {
   return new DatabaseSync(path);
 }
 
-function readJoinedMessages(path: string): JoinedMessageRow[] {
+function stableNumericId(value: string): bigint {
+  const digest = createHash('sha256').update(value, 'utf8').digest('hex');
+  const unsigned = BigInt(`0x${digest.slice(0, 16)}`);
+  const signedLimit = 0x7fffffffffffffffn;
+  const fullRange = 0x10000000000000000n;
+  const normalized = unsigned > signedLimit ? unsigned - fullRange : unsigned;
+  return normalized === 0n ? 1n : normalized;
+}
+
+function appendIdentity(message: CanonicalMessage): string {
+  return [
+    stableNumericId(message.conversationKey).toString(),
+    stableNumericId(message.authorKey).toString(),
+    String(message.timestampMs),
+    message.body,
+    message.hasAttachments ? '1' : '0',
+    message.hasQuote ? '1' : '0',
+    message.quoteBody ?? '',
+  ].join('|');
+}
+
+function readMessages(path: string): MessageRow[] {
   const db = openDatabase(path);
   try {
     return db.prepare(`
       SELECT
-        c.title AS conversationKey,
-        r.display_name AS authorKey,
-        m.timestamp,
-        m.body,
-        m.has_attachments AS hasAttachments,
-        m.has_quote AS hasQuote,
-        m.quote_body AS quoteBody
-      FROM messages m
-      JOIN conversations c ON c.id = m.conversation_id
-      JOIN recipients r ON r.id = m.author_id
-      ORDER BY m.id;
-    `).all() as JoinedMessageRow[];
+        id,
+        CAST(conversation_id AS TEXT) AS conversationId,
+        CAST(author_id AS TEXT) AS authorId,
+        timestamp,
+        body,
+        has_attachments AS hasAttachments,
+        has_quote AS hasQuote,
+        quote_body AS quoteBody
+      FROM messages
+      ORDER BY id;
+    `).all() as MessageRow[];
+  } finally {
+    db.close();
+  }
+}
+
+function readMessageFts(path: string): FtsRow[] {
+  const db = openDatabase(path);
+  try {
+    return db.prepare(`
+      SELECT rowid, body
+      FROM messages_fts
+      ORDER BY rowid;
+    `).all() as FtsRow[];
   } finally {
     db.close();
   }
@@ -59,20 +98,15 @@ function readTableNames(path: string): string[] {
   }
 }
 
-function seedArchiveWithoutLog(path: string, messages: CanonicalMessage[]): void {
+function seedMessageOnlyArchive(path: string, messages: CanonicalMessage[]): void {
   const db = openDatabase(path);
   try {
-    for (const statement of createArchiveSchemaSql()) {
-      db.exec(statement);
-    }
+    db.exec(`
+      CREATE TABLE messages (id INTEGER PRIMARY KEY, conversation_id INTEGER, author_id INTEGER, timestamp INTEGER, body TEXT, has_attachments INTEGER, has_quote INTEGER, quote_body TEXT);
+      CREATE VIRTUAL TABLE messages_fts USING fts5(body);
+      CREATE TABLE schema_info (key TEXT PRIMARY KEY, value TEXT);
+    `);
 
-    const conversationIds = new Map<string, number>();
-    const recipientIds = new Map<string, number>();
-
-    const insertConversation = db.prepare(`INSERT INTO conversations (title) VALUES (?);`);
-    const insertRecipient = db.prepare(`INSERT INTO recipients (display_name) VALUES (?);`);
-    const selectConversationId = db.prepare(`SELECT id FROM conversations WHERE title = ?;`);
-    const selectRecipientId = db.prepare(`SELECT id FROM recipients WHERE display_name = ?;`);
     const insertMessage = db.prepare(`
       INSERT INTO messages (
         conversation_id,
@@ -84,46 +118,30 @@ function seedArchiveWithoutLog(path: string, messages: CanonicalMessage[]): void
         quote_body
       ) VALUES (?, ?, ?, ?, ?, ?, ?);
     `);
+    const insertMessageFts = db.prepare(`INSERT INTO messages_fts (rowid, body) VALUES (?, ?);`);
+    const readLastInsertRowId = db.prepare(`SELECT last_insert_rowid() AS id;`);
+    const seen = new Set<string>();
 
     for (const message of messages) {
-      if (!conversationIds.has(message.conversationKey)) {
-        insertConversation.run(message.conversationKey);
-        conversationIds.set(
-          message.conversationKey,
-          (selectConversationId.get(message.conversationKey) as { id: number }).id
-        );
+      const identity = appendIdentity(message);
+      if (seen.has(identity)) {
+        continue;
       }
-
-      if (!recipientIds.has(message.authorKey)) {
-        insertRecipient.run(message.authorKey);
-        recipientIds.set(
-          message.authorKey,
-          (selectRecipientId.get(message.authorKey) as { id: number }).id
-        );
-      }
+      seen.add(identity);
 
       insertMessage.run(
-        conversationIds.get(message.conversationKey),
-        recipientIds.get(message.authorKey),
+        stableNumericId(message.conversationKey),
+        stableNumericId(message.authorKey),
         message.timestampMs,
         message.body,
         message.hasAttachments ? 1 : 0,
         message.hasQuote ? 1 : 0,
         message.quoteBody
       );
-    }
-  } finally {
-    db.close();
-  }
-}
 
-function createLookupTables(path: string): void {
-  const db = openDatabase(path);
-  try {
-    db.exec(`
-      CREATE TABLE conversations (id INTEGER PRIMARY KEY, title TEXT);
-      CREATE TABLE recipients (id INTEGER PRIMARY KEY, display_name TEXT);
-    `);
+      const insertedRow = readLastInsertRowId.get() as { id: number | bigint };
+      insertMessageFts.run(insertedRow.id, message.body);
+    }
   } finally {
     db.close();
   }
@@ -135,20 +153,22 @@ describe('append update', () => {
     await rm(dbPath, { force: true });
   });
 
-  it('inserts canonical message rows on the first run and skips them on the second', async () => {
+  it('inserts canonical message rows on the first run, skips them on the second, and keeps FTS in sync', async () => {
     const first = await applyAppendUpdate(dbPath, fixtureMessages);
     const second = await applyAppendUpdate(dbPath, fixtureMessages);
 
-    expect(first.inserted).toBeGreaterThan(0);
-    expect(second.inserted).toBe(0);
+    expect(first.inserted).toBe(fixtureMessages.length);
+    expect(second).toEqual({ inserted: 0, skipped: fixtureMessages.length });
 
-    expect(readTableNames(dbPath)).toEqual(
-      expect.arrayContaining(['conversations', 'messages', 'recipients'])
-    );
-    expect(readJoinedMessages(dbPath)).toEqual([
+    const tableNames = readTableNames(dbPath);
+    expect(tableNames).toEqual(expect.arrayContaining(['messages', 'messages_fts', 'schema_info']));
+    expect(tableNames).not.toEqual(expect.arrayContaining(['conversations', 'recipients']));
+
+    expect(readMessages(dbPath)).toEqual([
       {
-        conversationKey: 'grp-1',
-        authorKey: 'aci-123',
+        id: 1,
+        conversationId: stableNumericId('grp-1').toString(),
+        authorId: stableNumericId('aci-123').toString(),
         timestamp: 1710000000000,
         body: 'Hi',
         hasAttachments: 0,
@@ -156,8 +176,9 @@ describe('append update', () => {
         quoteBody: null,
       },
       {
-        conversationKey: 'grp-1',
-        authorKey: 'aci-124',
+        id: 2,
+        conversationId: stableNumericId('grp-1').toString(),
+        authorId: stableNumericId('aci-124').toString(),
         timestamp: 1710000001000,
         body: 'Hello back',
         hasAttachments: 1,
@@ -165,73 +186,21 @@ describe('append update', () => {
         quoteBody: null,
       },
     ]);
+
+    expect(readMessageFts(dbPath)).toEqual([
+      { rowid: 1, body: 'Hi' },
+      { rowid: 2, body: 'Hello back' },
+    ]);
   });
 
-  it('recognizes existing archive rows even when the append log table is absent', async () => {
-    seedArchiveWithoutLog(dbPath, fixtureMessages);
+  it('recognizes existing message-only rows without lookup tables', async () => {
+    seedMessageOnlyArchive(dbPath, fixtureMessages);
 
     const result = await applyAppendUpdate(dbPath, fixtureMessages);
 
     expect(result).toEqual({ inserted: 0, skipped: fixtureMessages.length });
-    expect(readJoinedMessages(dbPath)).toHaveLength(fixtureMessages.length);
-  });
-
-  it('remains idempotent after conversations/recipients backfill becomes available', async () => {
-    // Create a messages-only archive where conversation_id and author_id are
-    // stored as the canonical string keys. This simulates a partially
-    // initialized target that later gains lookup tables through schema backfill.
-    function seedMessagesOnlyWithStringKeys(path: string, messages: CanonicalMessage[]): void {
-      const db = openDatabase(path);
-      try {
-        // Find the CREATE TABLE statement for messages from the canonical schema
-        const msgsSql = createArchiveSchemaSql().find((s) => s.includes('CREATE TABLE messages'));
-        if (!msgsSql) throw new Error('messages DDL not found');
-        db.exec(msgsSql);
-
-        const insertMessage = db.prepare(`
-          INSERT INTO messages (
-            conversation_id,
-            author_id,
-            timestamp,
-            body,
-            has_attachments,
-            has_quote,
-            quote_body
-          ) VALUES (?, ?, ?, ?, ?, ?, ?);
-        `);
-
-        for (const msg of messages) {
-          // Intentionally store the canonical conversation/author keys directly
-          // into the conversation_id/author_id columns (sqlite allows this).
-          insertMessage.run(
-            msg.conversationKey,
-            msg.authorKey,
-            msg.timestampMs,
-            msg.body,
-            msg.hasAttachments ? 1 : 0,
-            msg.hasQuote ? 1 : 0,
-            msg.quoteBody
-          );
-        }
-      } finally {
-        db.close();
-      }
-    }
-
-    seedMessagesOnlyWithStringKeys(dbPath, fixtureMessages);
-    createLookupTables(dbPath);
-
-    const result = await applyAppendUpdate(dbPath, fixtureMessages);
-
-    expect(result).toEqual({ inserted: 0, skipped: fixtureMessages.length });
-    // The messages table should still contain the seeded rows
-    const db = openDatabase(dbPath);
-    try {
-      const rows = db.prepare('SELECT COUNT(*) as c FROM messages;').get() as { c: number };
-      expect(rows.c).toBe(fixtureMessages.length);
-    } finally {
-      db.close();
-    }
+    expect(readMessages(dbPath)).toHaveLength(fixtureMessages.length);
+    expect(readMessageFts(dbPath)).toHaveLength(fixtureMessages.length);
   });
 
   it('does not duplicate logical messages when two applies overlap', async () => {
@@ -241,13 +210,7 @@ describe('append update', () => {
     const [a, b] = await Promise.all([first, second]);
 
     expect(a.inserted + b.inserted).toBe(fixtureMessages.length);
-
-    const db = openDatabase(dbPath);
-    try {
-      const rows = db.prepare('SELECT COUNT(*) as c FROM messages;').get() as { c: number };
-      expect(rows.c).toBe(fixtureMessages.length);
-    } finally {
-      db.close();
-    }
+    expect(readMessages(dbPath)).toHaveLength(fixtureMessages.length);
+    expect(readMessageFts(dbPath)).toHaveLength(fixtureMessages.length);
   });
 });

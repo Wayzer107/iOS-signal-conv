@@ -2,9 +2,9 @@ import { access, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
+import { createHash } from 'node:crypto';
 import type { CanonicalMessage } from '../archive/types';
 import { createArchiveSchemaSql } from '../archive/schema';
-import { computeMessageIdentity } from '../archive/writer-contract';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
@@ -12,8 +12,8 @@ const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
 type SqliteDatabase = InstanceType<typeof DatabaseSync>;
 
 type PersistedMessageRow = {
-  conversationKey: string;
-  authorKey: string;
+  conversationId: string | number | bigint;
+  authorId: string | number | bigint;
   timestampMs: number;
   body: string;
   hasAttachments: number;
@@ -21,16 +21,36 @@ type PersistedMessageRow = {
   quoteBody: string | null;
 };
 
-function normalizePersistedKey(rawValue: unknown, joinedValue: unknown): string {
-  if (typeof rawValue === 'string') {
-    return rawValue;
+function stableNumericId(value: string): bigint {
+  const digest = createHash('sha256').update(value, 'utf8').digest('hex');
+  const unsigned = BigInt(`0x${digest.slice(0, 16)}`);
+  const signedLimit = 0x7fffffffffffffffn;
+  const fullRange = 0x10000000000000000n;
+  const normalized = unsigned > signedLimit ? unsigned - fullRange : unsigned;
+  return normalized === 0n ? 1n : normalized;
+}
+
+function computeAppendIdentity(message: Pick<
+  CanonicalMessage,
+  'conversationKey' | 'authorKey' | 'timestampMs' | 'body' | 'hasAttachments' | 'hasQuote' | 'quoteBody'
+>): string {
+  return [
+    stableNumericId(message.conversationKey).toString(),
+    stableNumericId(message.authorKey).toString(),
+    String(message.timestampMs),
+    message.body,
+    message.hasAttachments ? '1' : '0',
+    message.hasQuote ? '1' : '0',
+    message.quoteBody ?? '',
+  ].join('|');
+}
+
+function normalizePersistedId(rawValue: unknown): string {
+  if (typeof rawValue === 'bigint' || typeof rawValue === 'number' || typeof rawValue === 'string') {
+    return String(rawValue);
   }
 
-  if (rawValue != null) {
-    return joinedValue == null ? String(rawValue) : String(joinedValue);
-  }
-
-  return joinedValue == null ? '' : String(joinedValue);
+  return '';
 }
 
 function fileExists(dbPath: string): Promise<boolean> {
@@ -66,9 +86,15 @@ function tableExists(db: SqliteDatabase, tableName: string): boolean {
 }
 
 function ensureArchiveSchema(db: SqliteDatabase): void {
-  // Create all tables defined by the Task 2 archive contract. Use the centralized
-  // schema helper so tests and other code share the same DDL.
-  for (const sql of createArchiveSchemaSql()) {
+  // Task 5 applies message-only writes, so we intentionally initialize only the
+  // message-bearing tables needed for append and search sync.
+  for (const sql of createArchiveSchemaSql().filter((statement) => {
+    return (
+      /^\s*CREATE\s+TABLE\s+messages\b/i.test(statement) ||
+      /^\s*CREATE\s+VIRTUAL\s+TABLE\s+messages_fts\b/i.test(statement) ||
+      /^\s*CREATE\s+TABLE\s+schema_info\b/i.test(statement)
+    );
+  })) {
     const trimmed = sql.trim().replace(/;$/, '');
     if (/^CREATE\s+VIRTUAL\s+TABLE/i.test(trimmed)) {
       // Ensure virtual tables include IF NOT EXISTS
@@ -78,29 +104,9 @@ function ensureArchiveSchema(db: SqliteDatabase): void {
       const rest = trimmed.replace(/^CREATE\s+TABLE\s+/i, '');
       db.exec(`CREATE TABLE IF NOT EXISTS ${rest};`);
     } else {
-      // Fallback to executing the provided statement as-is
       db.exec(trimmed + ';');
     }
   }
-}
-
-function getOrCreateId(
-  db: SqliteDatabase,
-  tableName: 'conversations' | 'recipients',
-  columnName: 'title' | 'display_name',
-  value: string
-): number {
-  const select = db
-    .prepare(`SELECT id FROM ${tableName} WHERE ${columnName} = ? ORDER BY id LIMIT 1;`)
-    .get(value) as { id: number } | undefined;
-  if (select) {
-    return select.id;
-  }
-
-  db.prepare(`INSERT INTO ${tableName} (${columnName}) VALUES (?);`).run(value);
-  return (db.prepare(`SELECT id FROM ${tableName} WHERE ${columnName} = ? ORDER BY id LIMIT 1;`).get(value) as {
-    id: number;
-  }).id;
 }
 
 function readPersistedMessages(db: SqliteDatabase): PersistedMessageRow[] {
@@ -108,104 +114,11 @@ function readPersistedMessages(db: SqliteDatabase): PersistedMessageRow[] {
     return [];
   }
 
-  const hasConversations = tableExists(db, 'conversations');
-  const hasRecipients = tableExists(db, 'recipients');
-
-  if (hasConversations && hasRecipients) {
-    // Normal case: use joins when they resolve, but preserve any raw string keys
-    // already stored in message rows so schema backfills do not change identity.
-    return db
-      .prepare(`
-        SELECT
-          m.conversation_id AS conversationRaw,
-          c.title AS conversationJoined,
-          m.author_id AS authorRaw,
-          r.display_name AS authorJoined,
-          COALESCE(m.timestamp, 0) AS timestampMs,
-          COALESCE(m.body, '') AS body,
-          COALESCE(m.has_attachments, 0) AS hasAttachments,
-          COALESCE(m.has_quote, 0) AS hasQuote,
-          m.quote_body AS quoteBody
-        FROM messages m
-        LEFT JOIN conversations c ON c.id = m.conversation_id
-        LEFT JOIN recipients r ON r.id = m.author_id
-        ORDER BY m.id;
-      `)
-      .all()
-      .map((row: any) => ({
-        conversationKey: normalizePersistedKey(row.conversationRaw, row.conversationJoined),
-        authorKey: normalizePersistedKey(row.authorRaw, row.authorJoined),
-        timestampMs: Number(row.timestampMs) || 0,
-        body: row.body == null ? '' : String(row.body),
-        hasAttachments: Number(row.hasAttachments) || 0,
-        hasQuote: Number(row.hasQuote) || 0,
-        quoteBody: row.quoteBody == null ? null : String(row.quoteBody),
-      })) as PersistedMessageRow[];
-  }
-
-  if (hasConversations) {
-    return db
-      .prepare(`
-        SELECT
-          m.conversation_id AS conversationRaw,
-          c.title AS conversationJoined,
-          m.author_id AS authorRaw,
-          NULL AS authorJoined,
-          COALESCE(m.timestamp, 0) AS timestampMs,
-          COALESCE(m.body, '') AS body,
-          COALESCE(m.has_attachments, 0) AS hasAttachments,
-          COALESCE(m.has_quote, 0) AS hasQuote,
-          m.quote_body AS quoteBody
-        FROM messages m
-        LEFT JOIN conversations c ON c.id = m.conversation_id
-        ORDER BY m.id;
-      `)
-      .all()
-      .map((row: any) => ({
-        conversationKey: normalizePersistedKey(row.conversationRaw, row.conversationJoined),
-        authorKey: normalizePersistedKey(row.authorRaw, row.authorJoined),
-        timestampMs: Number(row.timestampMs) || 0,
-        body: row.body == null ? '' : String(row.body),
-        hasAttachments: Number(row.hasAttachments) || 0,
-        hasQuote: Number(row.hasQuote) || 0,
-        quoteBody: row.quoteBody == null ? null : String(row.quoteBody),
-      })) as PersistedMessageRow[];
-  }
-
-  if (hasRecipients) {
-    return db
-      .prepare(`
-        SELECT
-          m.conversation_id AS conversationRaw,
-          NULL AS conversationJoined,
-          m.author_id AS authorRaw,
-          r.display_name AS authorJoined,
-          COALESCE(m.timestamp, 0) AS timestampMs,
-          COALESCE(m.body, '') AS body,
-          COALESCE(m.has_attachments, 0) AS hasAttachments,
-          COALESCE(m.has_quote, 0) AS hasQuote,
-          m.quote_body AS quoteBody
-        FROM messages m
-        LEFT JOIN recipients r ON r.id = m.author_id
-        ORDER BY m.id;
-      `)
-      .all()
-      .map((row: any) => ({
-        conversationKey: normalizePersistedKey(row.conversationRaw, row.conversationJoined),
-        authorKey: normalizePersistedKey(row.authorRaw, row.authorJoined),
-        timestampMs: Number(row.timestampMs) || 0,
-        body: row.body == null ? '' : String(row.body),
-        hasAttachments: Number(row.hasAttachments) || 0,
-        hasQuote: Number(row.hasQuote) || 0,
-        quoteBody: row.quoteBody == null ? null : String(row.quoteBody),
-      })) as PersistedMessageRow[];
-  }
-
   return db
     .prepare(`
       SELECT
-        COALESCE(m.conversation_id, '') AS conversationKey,
-        COALESCE(m.author_id, '') AS authorKey,
+        CAST(COALESCE(m.conversation_id, '') AS TEXT) AS conversationId,
+        CAST(COALESCE(m.author_id, '') AS TEXT) AS authorId,
         COALESCE(m.timestamp, 0) AS timestampMs,
         COALESCE(m.body, '') AS body,
         COALESCE(m.has_attachments, 0) AS hasAttachments,
@@ -216,8 +129,8 @@ function readPersistedMessages(db: SqliteDatabase): PersistedMessageRow[] {
     `)
     .all()
     .map((row: any) => ({
-      conversationKey: row.conversationKey == null ? '' : String(row.conversationKey),
-      authorKey: row.authorKey == null ? '' : String(row.authorKey),
+      conversationId: row.conversationId == null ? '' : normalizePersistedId(row.conversationId),
+      authorId: row.authorId == null ? '' : normalizePersistedId(row.authorId),
       timestampMs: Number(row.timestampMs) || 0,
       body: row.body == null ? '' : String(row.body),
       hasAttachments: Number(row.hasAttachments) || 0,
@@ -229,15 +142,15 @@ function readPersistedMessages(db: SqliteDatabase): PersistedMessageRow[] {
 function readPersistedMessageIdentitiesFromDb(db: SqliteDatabase): Set<string> {
   return new Set(
     readPersistedMessages(db).map((row) =>
-      computeMessageIdentity({
-        conversationKey: row.conversationKey,
-        authorKey: row.authorKey,
-        timestampMs: row.timestampMs,
-        body: row.body,
-        hasAttachments: Boolean(row.hasAttachments),
-        hasQuote: Boolean(row.hasQuote),
-        quoteBody: row.quoteBody,
-      })
+      [
+        normalizePersistedId(row.conversationId),
+        normalizePersistedId(row.authorId),
+        String(row.timestampMs),
+        row.body,
+        row.hasAttachments ? '1' : '0',
+        row.hasQuote ? '1' : '0',
+        row.quoteBody ?? '',
+      ].join('|')
     )
   );
 }
@@ -283,27 +196,28 @@ export async function appendCanonicalMessages(
         quote_body
       ) VALUES (?, ?, ?, ?, ?, ?, ?);
     `);
+    const insertMessageFts = db.prepare(`INSERT INTO messages_fts (rowid, body) VALUES (?, ?);`);
+    const readLastInsertRowId = db.prepare(`SELECT last_insert_rowid() AS id;`);
 
     let inserted = 0;
     for (const message of messages) {
-      const identity = computeMessageIdentity(message);
+      const identity = computeAppendIdentity(message);
       if (seen.has(identity)) {
-        continue;
+       continue;
       }
       seen.add(identity);
 
-      const conversationId = getOrCreateId(db, 'conversations', 'title', message.conversationKey);
-      const authorId = getOrCreateId(db, 'recipients', 'display_name', message.authorKey);
-
       insertMessage.run(
-        conversationId,
-        authorId,
-        message.timestampMs,
-        message.body,
-        message.hasAttachments ? 1 : 0,
-        message.hasQuote ? 1 : 0,
-        message.quoteBody
+       stableNumericId(message.conversationKey),
+       stableNumericId(message.authorKey),
+       message.timestampMs,
+       message.body,
+       message.hasAttachments ? 1 : 0,
+       message.hasQuote ? 1 : 0,
+       message.quoteBody
       );
+      const insertedRow = readLastInsertRowId.get() as { id: number | bigint };
+      insertMessageFts.run(insertedRow.id, message.body);
       inserted += 1;
     }
 

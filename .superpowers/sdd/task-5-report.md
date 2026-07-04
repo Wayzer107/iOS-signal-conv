@@ -62,3 +62,16 @@ Report path: `.superpowers/sdd/task-5-report.md`
 - Command: `cd desktop-updater && PATH=/usr/local/bin:$PATH pnpm test -- tests/domain/update/append-idempotent.test.ts tests/domain/update/preview-readonly.test.ts tests/domain/update/empty-target-parity.test.ts`
 - Output: `Test Files 9 passed (9); Tests 13 passed (13)`
 - Result: stable persisted identity now survives lookup-table backfill, and overlapping append runs no longer duplicate logical messages.
+
+### 2026-07-04 review-finding fix
+
+- Scope tightened to message-only apply path: `conversations` and `recipients` are no longer created or mutated during append.
+- Persisted message identity now uses deterministic stored IDs derived from canonical keys, so lookup-table availability no longer affects idempotency.
+- `messages_fts` is updated in the same append transaction for every inserted message.
+
+### Verification
+
+- `cd desktop-updater && PATH=/usr/local/bin:$PATH pnpm test -- tests/domain/update/append-idempotent.test.ts tests/domain/update/preview-readonly.test.ts tests/domain/update/empty-target-parity.test.ts`
+  - Result: `9 passed, 12 tests passed`
+- `cd desktop-updater && PATH=/usr/local/bin:$PATH pnpm test`
+  - Result: `9 passed, 12 tests passed`
