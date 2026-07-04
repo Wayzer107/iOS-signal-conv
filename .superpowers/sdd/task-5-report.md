@@ -93,3 +93,6 @@ Report path: `.superpowers/sdd/task-5-report.md`
       Tests  13 passed (13)
    Start at  05:03:46
    Duration  2.32s (transform 192ms, setup 1ms, collect 547ms, tests 253ms, environment 2ms, prepare 3.96s)
+
+### 2026-07-04 cleanup
+- Removed accidental committed SQLite artifacts from desktop-updater/tmp/*.sqlite and added ignore rule.
