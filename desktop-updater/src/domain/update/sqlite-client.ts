@@ -5,6 +5,7 @@ import { dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { CanonicalMessage } from '../archive/types';
 import { createArchiveSchemaSql } from '../archive/schema';
+import { computeMessageIdentity } from '../archive/writer-contract';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
@@ -34,15 +35,17 @@ export function computeAppendIdentity(message: Pick<
   CanonicalMessage,
   'conversationKey' | 'authorKey' | 'timestampMs' | 'body' | 'hasAttachments' | 'hasQuote' | 'quoteBody'
 >): string {
-  return [
-    stableNumericId(message.conversationKey).toString(),
-    stableNumericId(message.authorKey).toString(),
-    String(message.timestampMs),
-    message.body,
-    message.hasAttachments ? '1' : '0',
-    message.hasQuote ? '1' : '0',
-    message.quoteBody ?? '',
-  ].join('|');
+  // Apply storage key transformation (stable numeric ids) before building the
+  // canonical identity using the shared computeMessageIdentity from the
+  // archive/writer-contract so Task 5 uses the same canonical identity logic
+  // as Task 2.
+  const transformed = {
+    ...message,
+    conversationKey: stableNumericId(message.conversationKey).toString(),
+    authorKey: stableNumericId(message.authorKey).toString(),
+  } as unknown as CanonicalMessage;
+
+  return computeMessageIdentity(transformed);
 }
 
 function normalizePersistedId(rawValue: unknown): string {

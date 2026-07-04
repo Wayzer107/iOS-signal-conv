@@ -27,10 +27,11 @@ export async function previewAppend(
   const existing = await readPersistedMessageIdentities(targetDbPath);
   const uniqueMessages = uniqueBatchMessages(messages);
   const newRows = uniqueMessages.filter((message) => !existing.has(computeAppendIdentity(message))).length;
+  const skippedExisting = uniqueMessages.length - newRows; // only count rows skipped because they already exist in DB
   return {
     totalInput: messages.length,
     newRows,
-    skippedExisting: messages.length - newRows,
+    skippedExisting,
   };
 }
 
