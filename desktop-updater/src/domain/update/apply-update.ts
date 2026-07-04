@@ -38,10 +38,8 @@ export async function applyAppendUpdate(
   targetDbPath: string,
   messages: CanonicalMessage[]
 ): Promise<AppendResult> {
-  const existing = await readPersistedMessageIdentities(targetDbPath);
   const uniqueMessages = uniqueBatchMessages(messages);
-  const insertable = uniqueMessages.filter((message) => !existing.has(computeMessageIdentity(message)));
-  const inserted = await appendCanonicalMessages(targetDbPath, insertable);
+  const inserted = await appendCanonicalMessages(targetDbPath, uniqueMessages);
   return {
     inserted,
     skipped: messages.length - inserted,

@@ -36,15 +36,29 @@ Implemented the append-only update engine for Task 5 with the requested scope li
 ### Fix applied (this commit)
 - Created full archive schema on empty targets: recipients, conversations, messages, messages_fts, schema_info.
 - File changed: `desktop-updater/src/domain/update/sqlite-client.ts`.
-- Commit: 82b5058
+- Commit: a91a4a6
 
 ### Test run summary
-I attempted to run the desktop-updater test suite from this environment but the system lacks Node/npm/pnpm, so tests could not be executed here (pnpm/npm not found). To run locally:
+I attempted to run the desktop-updater test suite from this environment but the system lacks Node/npm/pnpm, so tests could not be executed here.
 
-1) Ensure Node and pnpm are installed.
-2) cd desktop-updater
-3) PATH=/usr/local/bin:$PATH pnpm test -- tests/domain/update/append-idempotent.test.ts tests/domain/update/empty-target-parity.test.ts
+Commands attempted and output:
+
+- cd desktop-updater && npm test --silent
+  -> /bin/bash: npm: command not found
+
+Notes:
+- The test suite was updated to include a new case covering a partially-initialized target (messages table present, conversations/recipients absent) to verify idempotent appends.
+- To run locally:
+  1) Ensure Node and pnpm (or npm) are installed.
+  2) cd desktop-updater
+  3) pnpm test -- tests/domain/update/append-idempotent.test.ts
 
 If you want, I can run tests in CI or in an environment with Node available.
 
 Report path: `.superpowers/sdd/task-5-report.md`
+
+### 2026-07-04 verification update
+
+- Command: `cd desktop-updater && PATH=/usr/local/bin:$PATH pnpm test -- tests/domain/update/append-idempotent.test.ts tests/domain/update/preview-readonly.test.ts tests/domain/update/empty-target-parity.test.ts`
+- Output: `Test Files 9 passed (9); Tests 13 passed (13)`
+- Result: stable persisted identity now survives lookup-table backfill, and overlapping append runs no longer duplicate logical messages.

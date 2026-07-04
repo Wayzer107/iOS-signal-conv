@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 import type { CanonicalMessage } from '../archive/types';
+import { createArchiveSchemaSql } from '../archive/schema';
 import { computeMessageIdentity } from '../archive/writer-contract';
 
 const require = createRequire(import.meta.url);
@@ -19,6 +20,18 @@ type PersistedMessageRow = {
   hasQuote: number;
   quoteBody: string | null;
 };
+
+function normalizePersistedKey(rawValue: unknown, joinedValue: unknown): string {
+  if (typeof rawValue === 'string') {
+    return rawValue;
+  }
+
+  if (rawValue != null) {
+    return joinedValue == null ? String(rawValue) : String(joinedValue);
+  }
+
+  return joinedValue == null ? '' : String(joinedValue);
+}
 
 function fileExists(dbPath: string): Promise<boolean> {
   return access(dbPath, constants.F_OK)
@@ -51,8 +64,6 @@ function tableExists(db: SqliteDatabase, tableName: string): boolean {
     .all(tableName);
   return rows.length > 0;
 }
-
-import { createArchiveSchemaSql } from '../archive/schema';
 
 function ensureArchiveSchema(db: SqliteDatabase): void {
   // Create all tables defined by the Task 2 archive contract. Use the centralized
@@ -101,12 +112,15 @@ function readPersistedMessages(db: SqliteDatabase): PersistedMessageRow[] {
   const hasRecipients = tableExists(db, 'recipients');
 
   if (hasConversations && hasRecipients) {
-    // Normal case: we can join to conversations/recipients to get human keys
+    // Normal case: use joins when they resolve, but preserve any raw string keys
+    // already stored in message rows so schema backfills do not change identity.
     return db
       .prepare(`
         SELECT
-          COALESCE(c.title, '') AS conversationKey,
-          COALESCE(r.display_name, '') AS authorKey,
+          m.conversation_id AS conversationRaw,
+          c.title AS conversationJoined,
+          m.author_id AS authorRaw,
+          r.display_name AS authorJoined,
           COALESCE(m.timestamp, 0) AS timestampMs,
           COALESCE(m.body, '') AS body,
           COALESCE(m.has_attachments, 0) AS hasAttachments,
@@ -117,14 +131,76 @@ function readPersistedMessages(db: SqliteDatabase): PersistedMessageRow[] {
         LEFT JOIN recipients r ON r.id = m.author_id
         ORDER BY m.id;
       `)
-      .all() as PersistedMessageRow[];
+      .all()
+      .map((row: any) => ({
+        conversationKey: normalizePersistedKey(row.conversationRaw, row.conversationJoined),
+        authorKey: normalizePersistedKey(row.authorRaw, row.authorJoined),
+        timestampMs: Number(row.timestampMs) || 0,
+        body: row.body == null ? '' : String(row.body),
+        hasAttachments: Number(row.hasAttachments) || 0,
+        hasQuote: Number(row.hasQuote) || 0,
+        quoteBody: row.quoteBody == null ? null : String(row.quoteBody),
+      })) as PersistedMessageRow[];
   }
 
-  // Partially initialized: messages exist but one or both lookup tables are missing.
-  // Fall back to reading the raw conversation_id and author_id values from the
-  // messages table and coerce them to strings so we can compute identities from
-  // whatever persisted content is present (helps idempotency when the lookup
-  // tables are absent but messages were previously written).
+  if (hasConversations) {
+    return db
+      .prepare(`
+        SELECT
+          m.conversation_id AS conversationRaw,
+          c.title AS conversationJoined,
+          m.author_id AS authorRaw,
+          NULL AS authorJoined,
+          COALESCE(m.timestamp, 0) AS timestampMs,
+          COALESCE(m.body, '') AS body,
+          COALESCE(m.has_attachments, 0) AS hasAttachments,
+          COALESCE(m.has_quote, 0) AS hasQuote,
+          m.quote_body AS quoteBody
+        FROM messages m
+        LEFT JOIN conversations c ON c.id = m.conversation_id
+        ORDER BY m.id;
+      `)
+      .all()
+      .map((row: any) => ({
+        conversationKey: normalizePersistedKey(row.conversationRaw, row.conversationJoined),
+        authorKey: normalizePersistedKey(row.authorRaw, row.authorJoined),
+        timestampMs: Number(row.timestampMs) || 0,
+        body: row.body == null ? '' : String(row.body),
+        hasAttachments: Number(row.hasAttachments) || 0,
+        hasQuote: Number(row.hasQuote) || 0,
+        quoteBody: row.quoteBody == null ? null : String(row.quoteBody),
+      })) as PersistedMessageRow[];
+  }
+
+  if (hasRecipients) {
+    return db
+      .prepare(`
+        SELECT
+          m.conversation_id AS conversationRaw,
+          NULL AS conversationJoined,
+          m.author_id AS authorRaw,
+          r.display_name AS authorJoined,
+          COALESCE(m.timestamp, 0) AS timestampMs,
+          COALESCE(m.body, '') AS body,
+          COALESCE(m.has_attachments, 0) AS hasAttachments,
+          COALESCE(m.has_quote, 0) AS hasQuote,
+          m.quote_body AS quoteBody
+        FROM messages m
+        LEFT JOIN recipients r ON r.id = m.author_id
+        ORDER BY m.id;
+      `)
+      .all()
+      .map((row: any) => ({
+        conversationKey: normalizePersistedKey(row.conversationRaw, row.conversationJoined),
+        authorKey: normalizePersistedKey(row.authorRaw, row.authorJoined),
+        timestampMs: Number(row.timestampMs) || 0,
+        body: row.body == null ? '' : String(row.body),
+        hasAttachments: Number(row.hasAttachments) || 0,
+        hasQuote: Number(row.hasQuote) || 0,
+        quoteBody: row.quoteBody == null ? null : String(row.quoteBody),
+      })) as PersistedMessageRow[];
+  }
+
   return db
     .prepare(`
       SELECT
@@ -150,6 +226,22 @@ function readPersistedMessages(db: SqliteDatabase): PersistedMessageRow[] {
     })) as PersistedMessageRow[];
 }
 
+function readPersistedMessageIdentitiesFromDb(db: SqliteDatabase): Set<string> {
+  return new Set(
+    readPersistedMessages(db).map((row) =>
+      computeMessageIdentity({
+        conversationKey: row.conversationKey,
+        authorKey: row.authorKey,
+        timestampMs: row.timestampMs,
+        body: row.body,
+        hasAttachments: Boolean(row.hasAttachments),
+        hasQuote: Boolean(row.hasQuote),
+        quoteBody: row.quoteBody,
+      })
+    )
+  );
+}
+
 export async function readPersistedMessageIdentities(dbPath: string): Promise<Set<string>> {
   const db = await openDatabaseIfPresent(dbPath);
   if (!db) {
@@ -157,19 +249,7 @@ export async function readPersistedMessageIdentities(dbPath: string): Promise<Se
   }
 
   try {
-    return new Set(
-      readPersistedMessages(db).map((row) =>
-        computeMessageIdentity({
-          conversationKey: row.conversationKey,
-          authorKey: row.authorKey,
-          timestampMs: row.timestampMs,
-          body: row.body,
-          hasAttachments: Boolean(row.hasAttachments),
-          hasQuote: Boolean(row.hasQuote),
-          quoteBody: row.quoteBody,
-        })
-      )
-    );
+    return readPersistedMessageIdentitiesFromDb(db);
   } finally {
     db.close();
   }
@@ -189,6 +269,8 @@ export async function appendCanonicalMessages(
   try {
     ensureArchiveSchema(db);
     db.exec('BEGIN IMMEDIATE;');
+    const existing = readPersistedMessageIdentitiesFromDb(db);
+    const seen = new Set(existing);
 
     const insertMessage = db.prepare(`
       INSERT INTO messages (
@@ -202,7 +284,14 @@ export async function appendCanonicalMessages(
       ) VALUES (?, ?, ?, ?, ?, ?, ?);
     `);
 
+    let inserted = 0;
     for (const message of messages) {
+      const identity = computeMessageIdentity(message);
+      if (seen.has(identity)) {
+        continue;
+      }
+      seen.add(identity);
+
       const conversationId = getOrCreateId(db, 'conversations', 'title', message.conversationKey);
       const authorId = getOrCreateId(db, 'recipients', 'display_name', message.authorKey);
 
@@ -215,10 +304,11 @@ export async function appendCanonicalMessages(
         message.hasQuote ? 1 : 0,
         message.quoteBody
       );
+      inserted += 1;
     }
 
     db.exec('COMMIT;');
-    return messages.length;
+    return inserted;
   } catch (error) {
     try {
       db.exec('ROLLBACK;');

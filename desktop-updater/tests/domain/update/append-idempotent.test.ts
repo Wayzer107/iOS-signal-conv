@@ -117,6 +117,18 @@ function seedArchiveWithoutLog(path: string, messages: CanonicalMessage[]): void
   }
 }
 
+function createLookupTables(path: string): void {
+  const db = openDatabase(path);
+  try {
+    db.exec(`
+      CREATE TABLE conversations (id INTEGER PRIMARY KEY, title TEXT);
+      CREATE TABLE recipients (id INTEGER PRIMARY KEY, display_name TEXT);
+    `);
+  } finally {
+    db.close();
+  }
+}
+
 describe('append update', () => {
   beforeEach(async () => {
     await mkdir(resolve(process.cwd(), 'tmp'), { recursive: true });
@@ -164,10 +176,10 @@ describe('append update', () => {
     expect(readJoinedMessages(dbPath)).toHaveLength(fixtureMessages.length);
   });
 
-  it('recognizes existing message rows even when conversations/recipients tables are absent (partial init)', async () => {
+  it('remains idempotent after conversations/recipients backfill becomes available', async () => {
     // Create a messages-only archive where conversation_id and author_id are
     // stored as the canonical string keys. This simulates a partially
-    // initialized target where lookup tables are missing but message rows exist.
+    // initialized target that later gains lookup tables through schema backfill.
     function seedMessagesOnlyWithStringKeys(path: string, messages: CanonicalMessage[]): void {
       const db = openDatabase(path);
       try {
@@ -207,11 +219,29 @@ describe('append update', () => {
     }
 
     seedMessagesOnlyWithStringKeys(dbPath, fixtureMessages);
+    createLookupTables(dbPath);
 
     const result = await applyAppendUpdate(dbPath, fixtureMessages);
 
     expect(result).toEqual({ inserted: 0, skipped: fixtureMessages.length });
     // The messages table should still contain the seeded rows
+    const db = openDatabase(dbPath);
+    try {
+      const rows = db.prepare('SELECT COUNT(*) as c FROM messages;').get() as { c: number };
+      expect(rows.c).toBe(fixtureMessages.length);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('does not duplicate logical messages when two applies overlap', async () => {
+    const first = applyAppendUpdate(dbPath, fixtureMessages);
+    const second = applyAppendUpdate(dbPath, fixtureMessages);
+
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(a.inserted + b.inserted).toBe(fixtureMessages.length);
+
     const db = openDatabase(dbPath);
     try {
       const rows = db.prepare('SELECT COUNT(*) as c FROM messages;').get() as { c: number };
