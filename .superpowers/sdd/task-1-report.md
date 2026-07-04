@@ -47,3 +47,22 @@ Reviewer note on parity / E2E coverage:
 - The reviewer flagged branch-level parity/E2E coverage. This Task 1 change only fixes config and dev bootstrap issues. Branch-level acceptance and cross-branch E2E tests are planned in later tasks (Task 7 and related) and are not implemented here.
 
 
+## Task 1 fix - add jsdom
+Command attempted:
+- npm install --save-dev jsdom (in desktop-updater)
+
+Output:
+/bin/bash: line 7: npm: command not found
+
+Exit code: 0
+
+Commit: e211090
+## Task 1 fixes
+- Added jsdom, @types/react, @types/react-dom to desktop-updater/package.json devDependencies.
+
+### Attempted commands
+- cd desktop-updater && npm install --silent
+
+### Output
+/bin/bash: npm: command not found
+
