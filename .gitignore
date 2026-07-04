@@ -1,0 +1,4 @@
+desktop-updater/node_modules/
+desktop-updater/dist/
+.superpowers/
+.sdd_npm_install_output
