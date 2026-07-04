@@ -15,7 +15,7 @@ Implemented the append-only update engine for Task 5 with the requested scope li
 - Message identity is computed with the Task 2 contract.
 - Appends are idempotent across repeated runs against the same SQLite target.
 - Preview counts match applied inserts on an empty target.
-- SQLite access is handled through the local `sqlite3` CLI.
+- SQLite access is handled through Node's built-in `node:sqlite` API.
 
 ### Verification
 - Full `desktop-updater` Vitest suite passes.
@@ -24,11 +24,11 @@ Implemented the append-only update engine for Task 5 with the requested scope li
 - This task intentionally stops at append-only message logic.
 - Conversation and recipient maintenance are deferred to later tasks.
 
-### Reviewer fixes
-- `previewAppend` is now read-only: it only checks for an existing database and never creates schema or files.
-- Removed the ambient `sqlite3` CLI dependency by switching SQLite access to Node's built-in `node:sqlite` API.
-- `appendIdentities` now creates the parent output directory before opening a writable database.
+### Task 5 important-finding fix
+- `applyAppendUpdate` now writes canonical message rows into the archive DB (`messages`, plus minimal `conversations`/`recipients` rows) instead of only recording identities.
+- Existing-message detection now reads actual persisted archive rows, so a DB with pre-existing message data but no append log is treated as populated.
+- `previewAppend` remains read-only; it only reads existing state and never creates files or tables.
 
 ### Verification
-- `corepack pnpm test tests/domain/update/preview-readonly.test.ts tests/domain/update/append-idempotent.test.ts tests/domain/update/empty-target-parity.test.ts`
-- `corepack pnpm test`
+- `node /usr/local/Cellar/node/26.4.0/libexec/lib/node_modules/npm/bin/npm-cli.js run test -- tests/domain/update/append-idempotent.test.ts tests/domain/update/preview-readonly.test.ts tests/domain/update/empty-target-parity.test.ts`
+- `node /usr/local/Cellar/node/26.4.0/libexec/lib/node_modules/npm/bin/npm-cli.js run test`

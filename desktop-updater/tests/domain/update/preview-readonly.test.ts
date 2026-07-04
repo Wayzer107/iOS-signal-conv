@@ -10,7 +10,6 @@ describe('preview append', () => {
 
   beforeEach(async () => {
     await rm(dbPath, { force: true });
-    await rm(resolve(process.cwd(), 'tmp'), { recursive: true, force: true });
   });
 
   it('does not create the target db or schema tables', async () => {
