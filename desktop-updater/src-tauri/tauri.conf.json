@@ -1,0 +1,9 @@
+{
+  "package": {
+    "productName": "Desktop Updater",
+    "version": "0.0.0"
+  },
+  "tauri": {
+    "windows": []
+  }
+}
