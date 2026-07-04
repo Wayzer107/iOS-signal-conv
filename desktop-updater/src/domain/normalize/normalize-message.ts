@@ -1,9 +1,10 @@
 import type { CanonicalMessage } from '../archive/types';
 import type { SignalDesktopRow } from './types';
+import { normalizeConversationKey } from './normalize-conversation';
 
 export function normalizeDesktopRow(row: SignalDesktopRow): CanonicalMessage {
   return {
-    conversationKey: row.conversationServiceId,
+    conversationKey: normalizeConversationKey({ serviceId: row.conversationServiceId, title: row.conversationTitle }),
     authorKey: row.senderServiceId,
     timestampMs: row.sentAt,
     body: row.body ?? '',

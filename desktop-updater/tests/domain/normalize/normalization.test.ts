@@ -18,4 +18,19 @@ describe('desktop normalization', () => {
     expect(result.hasAttachments).toBe(true);
     expect(result.hasQuote).toBe(false);
   });
+
+  it('falls back to title when service id empty', () => {
+    const result = normalizeDesktopRow({
+      conversationServiceId: '',
+      conversationTitle: 'Fallback Title',
+      senderServiceId: 'aci-456',
+      sentAt: 1710000001000,
+      body: '',
+      attachmentCount: 0,
+      quoteBody: null,
+    });
+
+    expect(result.conversationKey).toBe('Fallback Title');
+    expect(result.authorKey).toBe('aci-456');
+  });
 });
