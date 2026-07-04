@@ -1,56 +1,84 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(execFile);
+import { access, mkdir } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname } from 'node:path';
 
 const APPEND_LOG_TABLE = 'message_append_log';
+const require = createRequire(import.meta.url);
+const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
 
-function escapeSqlLiteral(value: string): string {
-  return value.replaceAll("'", "''");
-}
-
-async function runSqlite(dbPath: string, sql: string): Promise<string> {
-  try {
-    const result = await execFileAsync('sqlite3', [dbPath, sql], {
-      maxBuffer: 10 * 1024 * 1024,
+function fileExists(dbPath: string): Promise<boolean> {
+  return access(dbPath, constants.F_OK)
+    .then(() => true)
+    .catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') {
+        return false;
+      }
+      throw error;
     });
-    return String(result.stdout ?? '');
-  } catch (error) {
-    throw new Error(`sqlite3 failed for ${dbPath}: ${(error as Error).message}`);
-  }
 }
 
-async function ensureAppendLogTable(dbPath: string): Promise<void> {
-  await runSqlite(
-    dbPath,
-    `CREATE TABLE IF NOT EXISTS ${APPEND_LOG_TABLE} (identity TEXT PRIMARY KEY, inserted_at INTEGER NOT NULL);`
-  );
+function openDatabaseIfPresent(dbPath: string): Promise<DatabaseSync | null> {
+  return fileExists(dbPath).then((exists) => {
+    if (!exists) {
+      return null;
+    }
+    return new DatabaseSync(dbPath);
+  });
+}
+
+function openWritableDatabase(dbPath: string): DatabaseSync {
+  return new DatabaseSync(dbPath);
 }
 
 export async function readAppendedIdentities(dbPath: string): Promise<Set<string>> {
-  await ensureAppendLogTable(dbPath);
-  const output = await runSqlite(dbPath, `SELECT identity FROM ${APPEND_LOG_TABLE};`);
-  const identities = output
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  return new Set(identities);
+  const db = await openDatabaseIfPresent(dbPath);
+  if (!db) {
+    return new Set();
+  }
+
+  try {
+    const tableCheck = db
+      .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?;`)
+      .all(APPEND_LOG_TABLE);
+    if (tableCheck.length === 0) {
+      return new Set();
+    }
+
+    const rows = db.prepare(`SELECT identity FROM ${APPEND_LOG_TABLE};`).all() as Array<{
+      identity: string;
+    }>;
+    return new Set(rows.map((row) => row.identity));
+  } finally {
+    db.close();
+  }
 }
 
 export async function appendIdentities(dbPath: string, identities: string[]): Promise<number> {
-  await ensureAppendLogTable(dbPath);
   if (identities.length === 0) {
     return 0;
   }
 
-  const now = Date.now();
-  const values = identities
-    .map((identity) => `('${escapeSqlLiteral(identity)}', ${now})`)
-    .join(', ');
-  const sql = `BEGIN; INSERT OR IGNORE INTO ${APPEND_LOG_TABLE} (identity, inserted_at) VALUES ${values}; COMMIT;`;
-  await runSqlite(dbPath, sql);
+  const existing = await readAppendedIdentities(dbPath);
+  await mkdir(dirname(dbPath), { recursive: true });
+  const db = openWritableDatabase(dbPath);
+
+  try {
+    db.exec(
+      `CREATE TABLE IF NOT EXISTS ${APPEND_LOG_TABLE} (identity TEXT PRIMARY KEY, inserted_at INTEGER NOT NULL);`
+    );
+
+    const now = Date.now();
+    const stmt = db.prepare(
+      `INSERT OR IGNORE INTO ${APPEND_LOG_TABLE} (identity, inserted_at) VALUES (?, ?);`
+    );
+    for (const identity of identities) {
+      stmt.run(identity, now);
+    }
+  } finally {
+    db.close();
+  }
 
   const after = await readAppendedIdentities(dbPath);
-  return identities.filter((identity) => after.has(identity)).length;
+  return identities.filter((identity) => !existing.has(identity) && after.has(identity)).length;
 }
-

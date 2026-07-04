@@ -24,3 +24,11 @@ Implemented the append-only update engine for Task 5 with the requested scope li
 - This task intentionally stops at append-only message logic.
 - Conversation and recipient maintenance are deferred to later tasks.
 
+### Reviewer fixes
+- `previewAppend` is now read-only: it only checks for an existing database and never creates schema or files.
+- Removed the ambient `sqlite3` CLI dependency by switching SQLite access to Node's built-in `node:sqlite` API.
+- `appendIdentities` now creates the parent output directory before opening a writable database.
+
+### Verification
+- `corepack pnpm test tests/domain/update/preview-readonly.test.ts tests/domain/update/append-idempotent.test.ts tests/domain/update/empty-target-parity.test.ts`
+- `corepack pnpm test`
